@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -22,20 +23,26 @@ func NewOrdersRepo(pool *pgxpool.Pool) *OrdersRepo {
 }
 
 func (r *OrdersRepo) Create(ctx context.Context, o *models.Order) error {
-	const q = `
-		INSERT INTO orders (user_id, product_id, amount, status)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, created_at`
+	id, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("orders_repo: generate id: %w", err)
+	}
+	o.ID = id
 
-	err := r.pool.QueryRow(ctx, q, o.UserID, o.ProductID, o.Amount, o.Status).
-		Scan(&o.ID, &o.CreatedAt)
+	const q = `
+		INSERT INTO orders (id, user_id, product_id, amount, status)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING created_at`
+
+	err = r.pool.QueryRow(ctx, q, o.ID, o.UserID, o.ProductID, o.Amount, o.Status).
+		Scan(&o.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("orders_repo: create: %w", err)
 	}
 	return nil
 }
 
-func (r *OrdersRepo) GetByID(ctx context.Context, id int64) (*models.Order, error) {
+func (r *OrdersRepo) GetByID(ctx context.Context, id uuid.UUID) (*models.Order, error) {
 	const q = `
 		SELECT id, user_id, product_id, amount, status, created_at
 		FROM orders
