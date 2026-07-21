@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 type OrderStatus string
 
@@ -11,7 +15,7 @@ const (
 )
 
 type Order struct {
-	ID        int64       `json:"order_id"`
+	ID        uuid.UUID   `json:"order_id"`
 	UserID    int64       `json:"user_id"`
 	ProductID string      `json:"product_id"`
 	Amount    int64       `json:"amount"`

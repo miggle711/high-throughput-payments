@@ -14,7 +14,7 @@ func main() {
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
-		databaseURL = "postgres://payments:payments@localhost:5433/payments"
+		databaseURL = "postgres://payments:payments@localhost:5434/payments"
 	}
 
 	pool, err := db.NewPool(ctx, databaseURL)
