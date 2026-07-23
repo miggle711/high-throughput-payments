@@ -22,7 +22,9 @@ func NewOrdersRepo(pool *pgxpool.Pool) *OrdersRepo {
 	return &OrdersRepo{pool: pool}
 }
 
-func (r *OrdersRepo) Create(ctx context.Context, o *models.Order) error {
+// Create inserts o within tx, so callers can atomically insert related rows
+// (e.g. an outbox event) in the same transaction.
+func (r *OrdersRepo) Create(ctx context.Context, tx pgx.Tx, o *models.Order) error {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return fmt.Errorf("orders_repo: generate id: %w", err)
@@ -34,12 +36,16 @@ func (r *OrdersRepo) Create(ctx context.Context, o *models.Order) error {
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING created_at`
 
-	err = r.pool.QueryRow(ctx, q, o.ID, o.UserID, o.ProductID, o.Amount, o.Status).
+	err = tx.QueryRow(ctx, q, o.ID, o.UserID, o.ProductID, o.Amount, o.Status).
 		Scan(&o.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("orders_repo: create: %w", err)
 	}
 	return nil
+}
+
+func (r *OrdersRepo) BeginTx(ctx context.Context) (pgx.Tx, error) {
+	return r.pool.Begin(ctx)
 }
 
 func (r *OrdersRepo) GetByID(ctx context.Context, id uuid.UUID) (*models.Order, error) {
