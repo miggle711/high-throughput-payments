@@ -11,18 +11,28 @@ import (
 	"github.com/mvar0010/high-throughput-payments/internal/models"
 )
 
+const orderCreatedTopic = "order.created"
+
 type OrderHandler struct {
-	repo *db.OrdersRepo
+	repo   *db.OrdersRepo
+	outbox *db.OutboxRepo
 }
 
-func NewOrderHandler(repo *db.OrdersRepo) *OrderHandler {
-	return &OrderHandler{repo: repo}
+func NewOrderHandler(repo *db.OrdersRepo, outbox *db.OutboxRepo) *OrderHandler {
+	return &OrderHandler{repo: repo, outbox: outbox}
 }
 
 type createOrderRequest struct {
 	UserID    int64  `json:"user_id"`
 	ProductID string `json:"product_id"`
 	Amount    int64  `json:"amount"`
+}
+
+type orderCreatedEvent struct {
+	OrderID   uuid.UUID `json:"order_id"`
+	UserID    int64     `json:"user_id"`
+	ProductID string    `json:"product_id"`
+	Amount    int64     `json:"amount"`
 }
 
 func (h *OrderHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +54,34 @@ func (h *OrderHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		Status:    models.OrderStatusPending,
 	}
 
-	if err := h.repo.Create(r.Context(), order); err != nil {
+	ctx := r.Context()
+
+	tx, err := h.repo.BeginTx(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create order")
+		return
+	}
+	defer tx.Rollback(ctx) // no-op if Commit succeeds
+
+	if err := h.repo.Create(ctx, tx, order); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create order")
+		return
+	}
+
+	event := orderCreatedEvent{
+		OrderID:   order.ID,
+		UserID:    order.UserID,
+		ProductID: order.ProductID,
+		Amount:    order.Amount,
+	}
+	// partition key is order_id: keeps all events for one order ordered,
+	// per the doc's Kafka partitioning guidance.
+	if err := h.outbox.Insert(ctx, tx, orderCreatedTopic, order.ID.String(), orderCreatedTopic, event); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create order")
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create order")
 		return
 	}
