@@ -40,7 +40,7 @@ func main() {
 	productsRepo := db.NewProductsRepo()
 	processedEventsRepo := db.NewProcessedEventsRepo()
 	outboxRepo := db.NewOutboxRepo(pool)
-	inventoryHandler := NewInventoryHandler(pool, productsRepo, processedEventsRepo, outboxRepo)
+	inventoryHandler := NewInventoryHandler(pool, productsRepo, processedEventsRepo, outboxRepo, consumerGroupID)
 
 	kafkaBrokers := strings.Split(envOr("KAFKA_BROKERS", "localhost:9092"), ",")
 
