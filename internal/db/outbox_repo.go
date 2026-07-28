@@ -52,19 +52,24 @@ func (r *OutboxRepo) Insert(ctx context.Context, tx pgx.Tx, topic, partitionKey,
 	return nil
 }
 
-// FetchUnpublished returns up to limit events that haven't been published yet,
-// oldest first.
-func (r *OutboxRepo) FetchUnpublished(ctx context.Context, limit int) ([]OutboxEvent, error) {
+// FetchAndClaimUnpublished returns up to limit unpublished events and locks
+// the underlying rows for the lifetime of tx (FOR UPDATE SKIP LOCKED). When
+// multiple relays (e.g. one per service, all sharing this table) poll
+// concurrently, each row is claimed by exactly one relay — the others skip
+// locked rows rather than blocking or double-fetching them. Callers must
+// mark returned events published (or let tx roll back) before committing.
+func (r *OutboxRepo) FetchAndClaimUnpublished(ctx context.Context, tx pgx.Tx, limit int) ([]OutboxEvent, error) {
 	const q = `
 		SELECT id, topic, partition_key, event_type, schema_version, payload, created_at
 		FROM outbox_events
 		WHERE published_at IS NULL
 		ORDER BY created_at
-		LIMIT $1`
+		LIMIT $1
+		FOR UPDATE SKIP LOCKED`
 
-	rows, err := r.pool.Query(ctx, q, limit)
+	rows, err := tx.Query(ctx, q, limit)
 	if err != nil {
-		return nil, fmt.Errorf("outbox_repo: fetch_unpublished: %w", err)
+		return nil, fmt.Errorf("outbox_repo: fetch_and_claim_unpublished: %w", err)
 	}
 	defer rows.Close()
 
@@ -82,10 +87,14 @@ func (r *OutboxRepo) FetchUnpublished(ctx context.Context, limit int) ([]OutboxE
 	return events, nil
 }
 
-func (r *OutboxRepo) MarkPublished(ctx context.Context, id uuid.UUID) error {
+func (r *OutboxRepo) MarkPublished(ctx context.Context, tx pgx.Tx, id uuid.UUID) error {
 	const q = `UPDATE outbox_events SET published_at = now() WHERE id = $1`
-	if _, err := r.pool.Exec(ctx, q, id); err != nil {
+	if _, err := tx.Exec(ctx, q, id); err != nil {
 		return fmt.Errorf("outbox_repo: mark_published: %w", err)
 	}
 	return nil
+}
+
+func (r *OutboxRepo) BeginTx(ctx context.Context) (pgx.Tx, error) {
+	return r.pool.Begin(ctx)
 }
