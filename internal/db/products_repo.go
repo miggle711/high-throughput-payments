@@ -18,8 +18,9 @@ func NewProductsRepo() *ProductsRepo {
 
 // DeductStock decrements stock by 1 within tx, failing with
 // ErrInsufficientStock if none is available. The WHERE stock > 0 guard
-// makes this safe under concurrent deductions for the same product —
-// Postgres row-level locking serializes concurrent updates to the same row.
+// makes this safe under concurrent deductions for the same product,
+// since Postgres row level locking serializes concurrent updates to the
+// same row.
 func (r *ProductsRepo) DeductStock(ctx context.Context, tx pgx.Tx, productID string) error {
 	const q = `
 		UPDATE products

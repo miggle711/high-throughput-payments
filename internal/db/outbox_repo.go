@@ -30,7 +30,7 @@ func NewOutboxRepo(pool *pgxpool.Pool) *OutboxRepo {
 }
 
 // Insert writes an outbox event within tx, so it commits atomically with
-// whatever business-data write (e.g. an order) the event describes.
+// whatever business data write (for example an order) the event describes.
 func (r *OutboxRepo) Insert(ctx context.Context, tx pgx.Tx, topic, partitionKey, eventType string, payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -54,10 +54,11 @@ func (r *OutboxRepo) Insert(ctx context.Context, tx pgx.Tx, topic, partitionKey,
 
 // FetchAndClaimUnpublished returns up to limit unpublished events and locks
 // the underlying rows for the lifetime of tx (FOR UPDATE SKIP LOCKED). When
-// multiple relays (e.g. one per service, all sharing this table) poll
-// concurrently, each row is claimed by exactly one relay — the others skip
-// locked rows rather than blocking or double-fetching them. Callers must
-// mark returned events published (or let tx roll back) before committing.
+// multiple relays (for example one per service, all sharing this table)
+// poll concurrently, each row is claimed by exactly one relay; the others
+// skip locked rows rather than blocking or fetching them twice. Callers
+// must mark returned events published, or let tx roll back, before
+// committing.
 func (r *OutboxRepo) FetchAndClaimUnpublished(ctx context.Context, tx pgx.Tx, limit int) ([]OutboxEvent, error) {
 	const q = `
 		SELECT id, topic, partition_key, event_type, schema_version, payload, created_at

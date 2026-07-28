@@ -45,8 +45,8 @@ func NewInventoryHandler(pool *pgxpool.Pool, products *db.ProductsRepo, processe
 
 // HandleOrderCreated deducts stock for the order's product and records an
 // inventory.deducted (or inventory.failed) outbox event. Safe to call more
-// than once for the same order: processedEvents.MarkProcessed is the
-// idempotency guard, so a redelivered message is a no-op past that check.
+// than once for the same order since processedEvents.MarkProcessed skips
+// any order already handled.
 func (h *InventoryHandler) HandleOrderCreated(ctx context.Context, msg kafka.Message) error {
 	var event orderCreatedEvent
 	if err := json.Unmarshal(msg.Value, &event); err != nil {
