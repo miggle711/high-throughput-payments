@@ -50,10 +50,22 @@ func (r *Relay) Run(ctx context.Context) {
 	}
 }
 
+// publishPending claims a batch of unpublished rows within a transaction
+// (locking them via FOR UPDATE SKIP LOCKED) so that other relays polling
+// the same shared outbox_events table — e.g. Order Service's and Inventory
+// Service's relays both running against one Postgres instance — skip rows
+// this one is already handling instead of racing to publish them twice.
 func (r *Relay) publishPending(ctx context.Context) {
-	events, err := r.outbox.FetchUnpublished(ctx, r.batchSize)
+	tx, err := r.outbox.BeginTx(ctx)
 	if err != nil {
-		log.Printf("outbox: fetch unpublished: %v", err)
+		log.Printf("outbox: begin tx: %v", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	events, err := r.outbox.FetchAndClaimUnpublished(ctx, tx, r.batchSize)
+	if err != nil {
+		log.Printf("outbox: fetch and claim unpublished: %v", err)
 		return
 	}
 
@@ -69,11 +81,15 @@ func (r *Relay) publishPending(ctx context.Context) {
 
 		if err := r.writer.WriteMessages(ctx, msg); err != nil {
 			log.Printf("outbox: publish event %s: %v", e.ID, err)
-			continue // leave unpublished, retried next tick
+			continue // leave unpublished; released back to the pool when tx rolls back
 		}
 
-		if err := r.outbox.MarkPublished(ctx, e.ID); err != nil {
+		if err := r.outbox.MarkPublished(ctx, tx, e.ID); err != nil {
 			log.Printf("outbox: mark published %s: %v", e.ID, err)
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("outbox: commit: %v", err)
 	}
 }

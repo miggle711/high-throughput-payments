@@ -8,8 +8,8 @@ import (
 )
 
 // EnsureTopic creates topic if it doesn't already exist. Kafka topic
-// creation is idempotent — CreateTopics on an existing topic is a no-op,
-// not an error — so this is safe to call on every startup.
+// creation is idempotent, so calling CreateTopics on an existing topic does
+// nothing and returns no error. Safe to call on every startup.
 func EnsureTopic(ctx context.Context, brokers []string, topic string, numPartitions int) error {
 	conn, err := kafka.DialContext(ctx, "tcp", brokers[0])
 	if err != nil {

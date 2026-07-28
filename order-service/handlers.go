@@ -61,7 +61,7 @@ func (h *OrderHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create order")
 		return
 	}
-	defer tx.Rollback(ctx) // no-op if Commit succeeds
+	defer tx.Rollback(ctx) // does nothing if Commit already succeeded
 
 	if err := h.repo.Create(ctx, tx, order); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create order")
