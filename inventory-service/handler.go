@@ -37,10 +37,11 @@ type InventoryHandler struct {
 	products        *db.ProductsRepo
 	processedEvents *db.ProcessedEventsRepo
 	outbox          *db.OutboxRepo
+	consumerGroupID string
 }
 
-func NewInventoryHandler(pool *pgxpool.Pool, products *db.ProductsRepo, processedEvents *db.ProcessedEventsRepo, outbox *db.OutboxRepo) *InventoryHandler {
-	return &InventoryHandler{pool: pool, products: products, processedEvents: processedEvents, outbox: outbox}
+func NewInventoryHandler(pool *pgxpool.Pool, products *db.ProductsRepo, processedEvents *db.ProcessedEventsRepo, outbox *db.OutboxRepo, consumerGroupID string) *InventoryHandler {
+	return &InventoryHandler{pool: pool, products: products, processedEvents: processedEvents, outbox: outbox, consumerGroupID: consumerGroupID}
 }
 
 // HandleOrderCreated deducts stock for the order's product and records an
@@ -64,7 +65,7 @@ func (h *InventoryHandler) HandleOrderCreated(ctx context.Context, msg kafka.Mes
 	}
 	defer tx.Rollback(ctx)
 
-	isNew, err := h.processedEvents.MarkProcessed(ctx, tx, orderID, orderCreatedTopic)
+	isNew, err := h.processedEvents.MarkProcessed(ctx, tx, orderID, orderCreatedTopic, h.consumerGroupID)
 	if err != nil {
 		return fmt.Errorf("inventory_handler: mark processed: %w", err)
 	}
