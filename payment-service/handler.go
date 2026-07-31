@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mvar0010/high-throughput-payments/internal/db"
-	"github.com/mvar0010/high-throughput-payments/internal/stripeclient"
+	"github.com/mvar0010/high-throughput-payments/internal/resilientstripe"
 )
 
 const orderCreatedTopic = "order.created"
@@ -28,12 +28,13 @@ type PaymentHandler struct {
 	pool            *pgxpool.Pool
 	payments        *db.PaymentsRepo
 	processedEvents *db.ProcessedEventsRepo
-	stripe          *stripeclient.Client
+	outbox          *db.OutboxRepo
+	stripe          *resilientstripe.Client
 	consumerGroupID string
 }
 
-func NewPaymentHandler(pool *pgxpool.Pool, payments *db.PaymentsRepo, processedEvents *db.ProcessedEventsRepo, stripe *stripeclient.Client, consumerGroupID string) *PaymentHandler {
-	return &PaymentHandler{pool: pool, payments: payments, processedEvents: processedEvents, stripe: stripe, consumerGroupID: consumerGroupID}
+func NewPaymentHandler(pool *pgxpool.Pool, payments *db.PaymentsRepo, processedEvents *db.ProcessedEventsRepo, outbox *db.OutboxRepo, stripe *resilientstripe.Client, consumerGroupID string) *PaymentHandler {
+	return &PaymentHandler{pool: pool, payments: payments, processedEvents: processedEvents, outbox: outbox, stripe: stripe, consumerGroupID: consumerGroupID}
 }
 
 // HandleOrderCreated creates and confirms a Stripe PaymentIntent for the
@@ -68,9 +69,22 @@ func (h *PaymentHandler) HandleOrderCreated(ctx context.Context, msg kafka.Messa
 		return nil
 	}
 
-	pi, err := h.stripe.CreateAndConfirmPaymentIntent(ctx, event.Amount, event.OrderID)
-	if err != nil {
-		return fmt.Errorf("payment_handler: create payment intent: %w", err)
+	pi, stripeErr := h.stripe.CreateAndConfirmPaymentIntent(ctx, event.Amount, event.OrderID)
+	if stripeErr != nil {
+		// Retries and the circuit breaker have already been exhausted inside
+		// resilientstripe, so this is a final outcome, not a transient
+		// error. Treat it the same as a real Stripe decline rather than
+		// leaving the order stuck: record it and publish payment.failed so
+		// the rest of the system reacts consistently either way.
+		log.Printf("payment: stripe call failed for order %s after retries: %v", event.OrderID, stripeErr)
+
+		if err := h.outbox.Insert(ctx, tx, paymentFailedType, event.OrderID, paymentFailedType, paymentEvent{OrderID: event.OrderID}); err != nil {
+			return fmt.Errorf("payment_handler: insert payment.failed outbox event: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("payment_handler: commit: %w", err)
+		}
+		return nil
 	}
 
 	payment := &db.Payment{
