@@ -12,29 +12,41 @@ import (
 	"github.com/avast/retry-go/v4"
 	"github.com/sony/gobreaker/v2"
 	"github.com/stripe/stripe-go/v83"
-
-	"github.com/mvar0010/high-throughput-payments/internal/stripeclient"
 )
 
 // retryDelays is the exact backoff schedule from the project design doc:
 // immediate retry, then 1s, 5s, 30s. After the final attempt fails, the
-// caller gives up rather than retrying forever.
+// caller gives up rather than retrying forever. A package variable so
+// tests can shorten it instead of waiting out the real 36 second sequence.
 var retryDelays = []time.Duration{0, time.Second, 5 * time.Second, 30 * time.Second}
 
+// stripeClient is the subset of stripeclient.Client this package depends
+// on. Defined here, rather than depended on concretely, so tests can
+// substitute a fake that fails on command instead of calling real Stripe.
+type stripeClient interface {
+	CreateAndConfirmPaymentIntent(ctx context.Context, amountCents int64, orderID string) (*stripe.PaymentIntent, error)
+}
+
 type Client struct {
-	inner   *stripeclient.Client
+	inner   stripeClient
 	breaker *gobreaker.CircuitBreaker[*stripe.PaymentIntent]
 }
 
+// breakerTimeout is how long the circuit stays open before allowing a
+// single trial call through. A package variable, rather than a New
+// parameter, keeps the exported constructor simple; tests override it to
+// avoid waiting out a real 30 seconds.
+var breakerTimeout = 30 * time.Second
+
 // New wraps client with a circuit breaker. The breaker opens after 5
 // consecutive failed calls (each call already being a full retry sequence,
-// not a single attempt) and stays open for 30 seconds before allowing a
+// not a single attempt) and stays open for breakerTimeout before allowing a
 // single trial call through to test recovery.
-func New(client *stripeclient.Client) *Client {
+func New(client stripeClient) *Client {
 	settings := gobreaker.Settings{
 		Name:        "stripe",
 		MaxRequests: 1,
-		Timeout:     30 * time.Second,
+		Timeout:     breakerTimeout,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			return counts.ConsecutiveFailures >= 5
 		},
