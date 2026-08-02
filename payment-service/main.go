@@ -15,6 +15,7 @@ import (
 	"github.com/mvar0010/high-throughput-payments/internal/db"
 	appkafka "github.com/mvar0010/high-throughput-payments/internal/kafka"
 	"github.com/mvar0010/high-throughput-payments/internal/outbox"
+	"github.com/mvar0010/high-throughput-payments/internal/resilientstripe"
 	"github.com/mvar0010/high-throughput-payments/internal/stripeclient"
 )
 
@@ -53,9 +54,9 @@ func main() {
 	paymentsRepo := db.NewPaymentsRepo(pool)
 	processedEventsRepo := db.NewProcessedEventsRepo()
 	outboxRepo := db.NewOutboxRepo(pool)
-	stripeClient := stripeclient.New(stripeSecretKey)
+	stripeClient := resilientstripe.New(stripeclient.New(stripeSecretKey))
 
-	paymentHandler := NewPaymentHandler(pool, paymentsRepo, processedEventsRepo, stripeClient, consumerGroupID)
+	paymentHandler := NewPaymentHandler(pool, paymentsRepo, processedEventsRepo, outboxRepo, stripeClient, consumerGroupID)
 	webhookHandler := NewWebhookHandler(paymentsRepo, processedEventsRepo, outboxRepo, stripeWebhookSecret)
 
 	kafkaBrokers := strings.Split(envOr("KAFKA_BROKERS", "localhost:9092"), ",")
