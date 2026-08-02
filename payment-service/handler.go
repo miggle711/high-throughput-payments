@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/segmentio/kafka-go"
+	"github.com/sony/gobreaker/v2"
 
 	"github.com/google/uuid"
 
@@ -70,12 +72,21 @@ func (h *PaymentHandler) HandleOrderCreated(ctx context.Context, msg kafka.Messa
 	}
 
 	pi, stripeErr := h.stripe.CreateAndConfirmPaymentIntent(ctx, event.Amount, event.OrderID)
+	if errors.Is(stripeErr, gobreaker.ErrOpenState) {
+		// The circuit is open, so this charge was never actually attempted,
+		// Stripe is presumed down, not this specific card declined. Return
+		// an error rather than commit: the transaction (including
+		// MarkProcessed above) rolls back, the offset is not committed, and
+		// Kafka redelivers this order once the consumer catches up, by
+		// which point the breaker may have closed again.
+		return fmt.Errorf("payment_handler: circuit open for order %s: %w", event.OrderID, stripeErr)
+	}
 	if stripeErr != nil {
-		// Retries and the circuit breaker have already been exhausted inside
-		// resilientstripe, so this is a final outcome, not a transient
-		// error. Treat it the same as a real Stripe decline rather than
-		// leaving the order stuck: record it and publish payment.failed so
-		// the rest of the system reacts consistently either way.
+		// Retries have been exhausted inside resilientstripe and the
+		// circuit is still closed, so Stripe was actually reachable and
+		// this is a final outcome (e.g. a real decline), not a transient
+		// error. Record it and publish payment.failed so the rest of the
+		// system reacts consistently, the same as an explicit decline.
 		log.Printf("payment: stripe call failed for order %s after retries: %v", event.OrderID, stripeErr)
 
 		if err := h.outbox.Insert(ctx, tx, paymentFailedType, event.OrderID, paymentFailedType, paymentEvent{OrderID: event.OrderID}); err != nil {
