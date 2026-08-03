@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	shutdownTimeout    = 10 * time.Second
-	consumerGroupID    = "inventory-service"
-	deductedTopicParts = 3
-	failedTopicParts   = 3
+	shutdownTimeout     = 10 * time.Second
+	consumerGroupID     = "inventory-service"
+	deductedTopicParts  = 3
+	failedTopicParts    = 3
+	restockedTopicParts = 3
 )
 
 func main() {
@@ -50,12 +51,21 @@ func main() {
 	if err := outbox.EnsureTopic(ctx, kafkaBrokers, inventoryFailedType, failedTopicParts); err != nil {
 		log.Fatalf("inventory-service: %v", err)
 	}
+	if err := outbox.EnsureTopic(ctx, kafkaBrokers, inventoryRestockedType, restockedTopicParts); err != nil {
+		log.Fatalf("inventory-service: %v", err)
+	}
 
 	relay := outbox.NewRelay(outboxRepo, kafkaBrokers)
 	go relay.Run(ctx)
 
-	consumer := appkafka.NewConsumer(kafkaBrokers, orderCreatedTopic, consumerGroupID, inventoryHandler.HandleOrderCreated)
-	go consumer.Run(ctx)
+	orderCreatedConsumer := appkafka.NewConsumer(kafkaBrokers, orderCreatedTopic, consumerGroupID, inventoryHandler.HandleOrderCreated)
+	go orderCreatedConsumer.Run(ctx)
+
+	orderCancelledConsumer := appkafka.NewConsumer(kafkaBrokers, orderCancelledTopic, consumerGroupID, inventoryHandler.HandleCompensation(orderCancelledTopic))
+	go orderCancelledConsumer.Run(ctx)
+
+	paymentFailedConsumer := appkafka.NewConsumer(kafkaBrokers, paymentFailedTopic, consumerGroupID, inventoryHandler.HandleCompensation(paymentFailedTopic))
+	go paymentFailedConsumer.Run(ctx)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler)
