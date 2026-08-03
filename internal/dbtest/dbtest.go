@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -31,7 +32,14 @@ func NewPool(t *testing.T) *pgxpool.Pool {
 		tcpostgres.WithUsername("payments"),
 		tcpostgres.WithPassword("payments"),
 		testcontainers.WithWaitStrategy(
-			wait.ForListeningPort("5432/tcp"),
+			// A listening port does not mean Postgres is ready to accept
+			// queries yet; it briefly resets connections right after
+			// opening the socket. Waiting for this log line, which
+			// Postgres prints once real, avoids that flaky window
+			// (surfaced as "connection reset by peer" in CI).
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(30*time.Second),
 		),
 	)
 	if err != nil {
