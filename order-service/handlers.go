@@ -11,7 +11,10 @@ import (
 	"github.com/mvar0010/high-throughput-payments/internal/models"
 )
 
-const orderCreatedTopic = "order.created"
+const (
+	orderCreatedTopic   = "order.created"
+	orderCancelledTopic = "order.cancelled"
+)
 
 type OrderHandler struct {
 	repo   *db.OrdersRepo
@@ -33,6 +36,11 @@ type orderCreatedEvent struct {
 	UserID    int64     `json:"user_id"`
 	ProductID string    `json:"product_id"`
 	Amount    int64     `json:"amount"`
+}
+
+type orderCancelledEvent struct {
+	OrderID   uuid.UUID `json:"order_id"`
+	ProductID string    `json:"product_id"`
 }
 
 func (h *OrderHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +111,62 @@ func (h *OrderHandler) GetOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to fetch order")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, order)
+}
+
+func (h *OrderHandler) CancelOrder(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid order id")
+		return
+	}
+
+	ctx := r.Context()
+
+	existing, err := h.repo.GetByID(ctx, id)
+	if errors.Is(err, db.ErrOrderNotFound) {
+		writeError(w, http.StatusNotFound, "order not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to cancel order")
+		return
+	}
+	if existing.Status != models.OrderStatusPending {
+		writeError(w, http.StatusConflict, "order is not pending and cannot be cancelled")
+		return
+	}
+
+	tx, err := h.repo.BeginTx(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to cancel order")
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	order, err := h.repo.CancelPending(ctx, tx, id)
+	if errors.Is(err, db.ErrOrderNotCancellable) {
+		// Lost a race with another writer (e.g. Payment Service just marked
+		// this order paid) between the check above and this update.
+		writeError(w, http.StatusConflict, "order is not pending and cannot be cancelled")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to cancel order")
+		return
+	}
+
+	event := orderCancelledEvent{OrderID: order.ID, ProductID: order.ProductID}
+	if err := h.outbox.Insert(ctx, tx, orderCancelledTopic, order.ID.String(), orderCancelledTopic, event); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to cancel order")
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to cancel order")
 		return
 	}
 

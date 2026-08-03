@@ -39,6 +39,9 @@ func main() {
 	if err := outbox.EnsureTopic(ctx, kafkaBrokers, orderCreatedTopic, 3); err != nil {
 		log.Fatalf("order-service: %v", err)
 	}
+	if err := outbox.EnsureTopic(ctx, kafkaBrokers, orderCancelledTopic, 3); err != nil {
+		log.Fatalf("order-service: %v", err)
+	}
 
 	relay := outbox.NewRelay(outboxRepo, kafkaBrokers)
 	go relay.Run(ctx)
@@ -47,10 +50,7 @@ func main() {
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("POST /orders", orderHandler.CreateOrder)
 	mux.HandleFunc("GET /orders/{id}", orderHandler.GetOrder)
-
-	// TODO: mux.HandleFunc("POST /orders/{id}/cancel", orderHandler.CancelOrder)
-	// Cancel triggers the saga/compensation flow (restock inventory, refund if
-	// already charged) — needs the saga pattern decided first.
+	mux.HandleFunc("POST /orders/{id}/cancel", orderHandler.CancelOrder)
 
 	addr := ":" + envOr("PORT", "8080")
 	server := &http.Server{Addr: addr, Handler: mux}
