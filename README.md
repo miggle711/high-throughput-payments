@@ -10,23 +10,23 @@ I built this to get hands on with the async messaging, the transactional outbox 
 flowchart TD
     Client([POST /orders]) --> OrderSvc[Order Service]
     OrderSvc --> OrderDB[(Postgres:<br/>orders, outbox_events)]
-    OrderSvc -- publishes order.created --> Kafka{{Kafka}}
+    OrderSvc -->|publishes order.created| Kafka{{Kafka}}
 
     Kafka --> InventorySvc[Inventory Service]
     Kafka --> PaymentSvc[Payment Service]
 
-    InventorySvc -- deducts stock --> InventoryDB[(Postgres:<br/>products)]
-    InventorySvc -- publishes --> InvEvents[inventory.deducted<br/>or inventory.failed]
+    InventorySvc -->|deducts stock| InventoryDB[(Postgres:<br/>products)]
+    InventorySvc -->|publishes| InvEvents[inventory.deducted<br/>or inventory.failed]
 
-    PaymentSvc -- charges the card --> Stripe([Stripe])
-    Stripe -- webhook confirms outcome --> PaymentSvc
-    PaymentSvc -- publishes --> PayEvents[payment.completed<br/>or payment.failed]
+    PaymentSvc -->|charges the card| Stripe([Stripe])
+    Stripe -->|webhook confirms outcome| PaymentSvc
+    PaymentSvc -->|publishes| PayEvents[payment.completed<br/>or payment.failed]
 
-    PayEvents -. consumed by .-> InventorySvc
-    Cancel([POST /orders/id/cancel]) -- publishes order.cancelled --> Kafka
-    Kafka -. order.cancelled .-> InventorySvc
+    PayEvents -.->|consumed by| InventorySvc
+    Cancel([POST /orders/id/cancel]) -->|publishes order.cancelled| Kafka
+    Kafka -.->|order.cancelled| InventorySvc
 
-    InventorySvc -- restocks on failure or cancel --> InventoryDB
+    InventorySvc -->|restocks on failure or cancel| InventoryDB
 ```
 
 Order Service never waits on Kafka, Stripe, or anything downstream, it writes to Postgres and returns. Every write that also needs to tell another service about it goes through the transactional outbox pattern instead, so a service never talks to Kafka directly inside a request handler. Inventory Service listening for `payment.failed` and `order.cancelled` to restock automatically is the saga compensation piece, no central coordinator, each service just reacts to events on its own.
