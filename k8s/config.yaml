@@ -1,0 +1,11 @@
+# Settings shared by all services. The database credentials are the same
+# throwaway ones docker-compose uses. Stripe keys live in a Secret created
+# by hand (see the README), never in this repo.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: payments
+data:
+  DATABASE_URL: postgres://payments:payments@postgres:5432/payments
+  KAFKA_BROKERS: kafka:9092

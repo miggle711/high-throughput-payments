@@ -73,6 +73,38 @@ curl -X POST localhost:8080/orders/<order_id>/cancel
 
 Watch the logs across all three services and you'll see the order get created, inventory get deducted, Stripe get charged, and the webhook come back to confirm it, all within a second or two.
 
+## Running on Kubernetes
+
+The same system runs on a local [kind](https://kind.sigs.k8s.io) cluster. You need Docker, kind, and kubectl.
+
+```bash
+kind create cluster --name payments --config kind-config.yaml
+
+# build the images and load them into the cluster
+for s in order-service inventory-service payment-service; do
+  docker build --build-arg SERVICE=$s -t $s:dev .
+  kind load docker-image $s:dev --name payments
+done
+docker build --target migrate -t migrate:dev .
+kind load docker-image migrate:dev --name payments
+
+# data layer, then migrations, then the services
+kubectl apply -f k8s/namespace.yaml -f k8s/config.yaml -f k8s/postgres.yaml -f k8s/kafka.yaml
+kubectl -n payments wait --for=condition=ready pod/postgres-0 pod/kafka-0 --timeout=180s
+kubectl apply -f k8s/migrate-job.yaml
+kubectl -n payments wait --for=condition=complete job/migrate --timeout=120s
+kubectl -n payments create secret generic stripe-keys \
+  --from-literal=STRIPE_SECRET_KEY=sk_test_... \
+  --from-literal=STRIPE_WEBHOOK_SECRET=whsec_...
+kubectl apply -f k8s/order-service.yaml -f k8s/inventory-service.yaml -f k8s/payment-service.yaml
+
+# talk to it, and scale the bottleneck
+kubectl -n payments port-forward svc/order-service 18080:8080
+kubectl -n payments scale deploy/payment-service --replicas=3
+```
+
+For webhooks, port forward `svc/payment-service` on 8082 and point `stripe listen` at it. Tear down with `kind delete cluster --name payments`.
+
 ## What each service does
 
 **Order Service** takes the order, writes it to Postgres, and publishes `order.created`. It never waits on Kafka, Stripe, or anything else, the request returns as soon as Postgres commits.

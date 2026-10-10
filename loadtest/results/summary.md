@@ -61,6 +61,17 @@ docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:19092 --alter --topic order.created --partitions 12
 ```
 
+### Same test on Kubernetes (kind)
+
+Same 180 orders, but Payment Service runs as a Deployment and is scaled with `kubectl scale`, using `loadtest/drain-k8s.sh`.
+
+| Replicas | Time to drain 180 orders | Payments per minute |
+|---|---|---|
+| 1 | 164s | 65 |
+| 3 | 68s | 156 |
+
+2.4x with 3 replicas and 180 distinct payments. Slightly below the local run because the clock includes pod startup.
+
 ## How to reproduce
 
 ```
