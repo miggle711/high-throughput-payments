@@ -1,0 +1,1 @@
+ALTER TABLE payments ADD COLUMN product_id TEXT NOT NULL DEFAULT '';

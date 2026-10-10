@@ -111,7 +111,6 @@ The load test also revealed something interesting... the Payment Service is the 
 
 ## What's not done yet
 
-- Known bug: `payment.failed` events carry no product id, so Inventory doesn't actually restock after a failed payment ([#28](../../issues/28))
 - Scaling Payment Service horizontally to close the Stripe latency bottleneck the load test found ([#25](../../issues/25))
 - Prometheus and Grafana dashboards
 - Jaeger distributed tracing across the three services
