@@ -101,7 +101,7 @@ Ran Locust against Order Service two ways: baseline with nothing consuming its e
 
 Order Service's latency barely moved between the two runs (P50 4ms vs 5ms), which is the whole point of the outbox pattern, its write path doesn't care what's happening downstream.
 
-The load test also revealed something interesting... the Payment Service is the actual bottleneck, sustaining around 58 payments a minute because every payment makes a real synchronous call to Stripe. This is just Stripe's own latency showing. Full writeup, HTML reports, and the fix I'd apply next (scale Payment Service horizontally across more Kafka consumer instances) are in [`loadtest/results/summary.md`](loadtest/results/summary.md).
+The load test also revealed something interesting... the Payment Service is the actual bottleneck, sustaining around 58 payments a minute because every payment makes a real synchronous call to Stripe. This is just Stripe's own latency showing. Full writeup, HTML reports, and the horizontal scaling result (1 instance at 66 payments a minute, 3 instances at 180) are in [`loadtest/results/summary.md`](loadtest/results/summary.md).
 
 ## Failure scenarios that I've Tested so far
 
@@ -111,7 +111,6 @@ The load test also revealed something interesting... the Payment Service is the 
 
 ## What's not done yet
 
-- Scaling Payment Service horizontally to close the Stripe latency bottleneck the load test found ([#25](../../issues/25))
 - Prometheus and Grafana dashboards
 - Jaeger distributed tracing across the three services
 - A live deployed version you can hit without cloning the repo
