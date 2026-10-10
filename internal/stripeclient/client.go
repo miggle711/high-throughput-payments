@@ -9,6 +9,7 @@ import (
 
 	"github.com/stripe/stripe-go/v83"
 	"github.com/stripe/stripe-go/v83/paymentintent"
+	"github.com/stripe/stripe-go/v83/refund"
 )
 
 // TestPaymentMethod always succeeds in Stripe test mode. Used since this
@@ -48,4 +49,20 @@ func (c *Client) CreateAndConfirmPaymentIntent(ctx context.Context, amountCents 
 		return nil, fmt.Errorf("stripeclient: create payment intent: %w", err)
 	}
 	return pi, nil
+}
+
+// RefundPaymentIntent refunds the full amount of a charged PaymentIntent.
+// The idempotency key is derived from the PaymentIntent ID, so a retry or a
+// Kafka redelivery of the same cancel returns the original refund instead
+// of refunding twice.
+func (c *Client) RefundPaymentIntent(ctx context.Context, paymentIntentID string) (*stripe.Refund, error) {
+	params := &stripe.RefundParams{PaymentIntent: stripe.String(paymentIntentID)}
+	params.Context = ctx
+	params.SetIdempotencyKey("refund-" + paymentIntentID)
+
+	r, err := refund.New(params)
+	if err != nil {
+		return nil, fmt.Errorf("stripeclient: refund payment intent: %w", err)
+	}
+	return r, nil
 }

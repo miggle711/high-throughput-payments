@@ -107,11 +107,11 @@ The load test also revealed something interesting... the Payment Service is the 
 
 - **Stripe goes down.** Forced this with an invalid API key. Watched 4 retry attempts happen on the exact schedule (immediate, 1s, 5s, 30s), watched the breaker trip after 5 consecutive failures, watched it correctly leave a stuck order in Kafka instead of falsely marking it failed, and watched it get picked up and charged successfully the moment I restored a working key. Details in [PR #22](../../pull/22).
 - **A service crashes mid-processing.** Kafka's offset is only committed after the handler actually succeeds, so a crash mid-message just means it gets redelivered on restart. Proven for real: restarting Inventory Service after adding the compensation consumer immediately caught up on a backlog of real `payment.failed` events from earlier testing that had never been consumed. Details in [PR #24](../../pull/24).
-- **Cancel an order while it's being charged.** Found this one by accident while testing cancel: a customer can cancel while Payment Service is mid flight charging them, and the order ends up marked cancelled while the charge still goes through. Filed as [#23](../../issues/23), refunding on that race is real work I haven't done yet, more below.
+- **Cancel an order while it's being charged.**  a customer could cancel while Payment Service was mid flight charging them, and the order ended up cancelled while the charge still went through. Fixed in [#23](../../issues/23): Payment Service now consumes `order.cancelled`, refunds through Stripe if the charge already landed (or when the webhook confirms it), skips the charge if the cancel came first, and publishes `payment.refunded`. Refunds use a Stripe idempotency key so redelivery never refunds twice. Covered by tests for all three orderings.
 
 ## What's not done yet
 
-- Refunding via Stripe when an order is cancelled after it was already charged ([#23](../../issues/23))
+- Known bug: `payment.failed` events carry no product id, so Inventory doesn't actually restock after a failed payment ([#28](../../issues/28))
 - Scaling Payment Service horizontally to close the Stripe latency bottleneck the load test found ([#25](../../issues/25))
 - Prometheus and Grafana dashboards
 - Jaeger distributed tracing across the three services

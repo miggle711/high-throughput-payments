@@ -57,7 +57,7 @@ func main() {
 	stripeClient := resilientstripe.New(stripeclient.New(stripeSecretKey))
 
 	paymentHandler := NewPaymentHandler(pool, paymentsRepo, processedEventsRepo, outboxRepo, stripeClient, consumerGroupID)
-	webhookHandler := NewWebhookHandler(paymentsRepo, processedEventsRepo, outboxRepo, stripeWebhookSecret)
+	webhookHandler := NewWebhookHandler(paymentsRepo, processedEventsRepo, outboxRepo, stripeClient, stripeWebhookSecret)
 
 	kafkaBrokers := strings.Split(envOr("KAFKA_BROKERS", "localhost:9092"), ",")
 
@@ -68,11 +68,21 @@ func main() {
 		log.Fatalf("payment-service: %v", err)
 	}
 
+	if err := outbox.EnsureTopic(ctx, kafkaBrokers, paymentRefundedType, topicPartitions); err != nil {
+		log.Fatalf("payment-service: %v", err)
+	}
+	if err := outbox.EnsureTopic(ctx, kafkaBrokers, orderCancelledTopic, topicPartitions); err != nil {
+		log.Fatalf("payment-service: %v", err)
+	}
+
 	relay := outbox.NewRelay(outboxRepo, kafkaBrokers)
 	go relay.Run(ctx)
 
 	consumer := appkafka.NewConsumer(kafkaBrokers, orderCreatedTopic, consumerGroupID, paymentHandler.HandleOrderCreated)
 	go consumer.Run(ctx)
+
+	orderCancelledConsumer := appkafka.NewConsumer(kafkaBrokers, orderCancelledTopic, consumerGroupID, paymentHandler.HandleOrderCancelled)
+	go orderCancelledConsumer.Run(ctx)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler)

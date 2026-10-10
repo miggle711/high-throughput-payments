@@ -17,7 +17,10 @@ import (
 	"github.com/mvar0010/high-throughput-payments/internal/resilientstripe"
 )
 
-const orderCreatedTopic = "order.created"
+const (
+	orderCreatedTopic   = "order.created"
+	orderCancelledTopic = "order.cancelled"
+)
 
 type orderCreatedEvent struct {
 	OrderID   string `json:"order_id"`
@@ -32,11 +35,12 @@ type PaymentHandler struct {
 	processedEvents *db.ProcessedEventsRepo
 	outbox          *db.OutboxRepo
 	stripe          *resilientstripe.Client
+	refunder        *refunder
 	consumerGroupID string
 }
 
 func NewPaymentHandler(pool *pgxpool.Pool, payments *db.PaymentsRepo, processedEvents *db.ProcessedEventsRepo, outbox *db.OutboxRepo, stripe *resilientstripe.Client, consumerGroupID string) *PaymentHandler {
-	return &PaymentHandler{pool: pool, payments: payments, processedEvents: processedEvents, outbox: outbox, stripe: stripe, consumerGroupID: consumerGroupID}
+	return &PaymentHandler{pool: pool, payments: payments, processedEvents: processedEvents, outbox: outbox, stripe: stripe, refunder: &refunder{stripe: stripe, payments: payments, outbox: outbox}, consumerGroupID: consumerGroupID}
 }
 
 // HandleOrderCreated creates and confirms a Stripe PaymentIntent for the
@@ -68,6 +72,25 @@ func (h *PaymentHandler) HandleOrderCreated(ctx context.Context, msg kafka.Messa
 	}
 	if !isNew {
 		log.Printf("payment: order %s already processed, skipping", event.OrderID)
+		return nil
+	}
+
+	// Serialize against HandleOrderCancelled so a cancel cannot slip in
+	// between this check and the payment row insert below.
+	if err := h.payments.LockOrder(ctx, tx, orderID); err != nil {
+		return fmt.Errorf("payment_handler: %w", err)
+	}
+	cancelled, err := h.payments.IsCancelled(ctx, tx, orderID)
+	if err != nil {
+		return fmt.Errorf("payment_handler: %w", err)
+	}
+	if cancelled {
+		// Cancelled before we charged: skip the charge entirely. Committing
+		// keeps the processed_events mark so redelivery stays a no-op.
+		log.Printf("payment: order %s already cancelled, not charging", event.OrderID)
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("payment_handler: commit: %w", err)
+		}
 		return nil
 	}
 
@@ -113,5 +136,64 @@ func (h *PaymentHandler) HandleOrderCreated(ctx context.Context, msg kafka.Messa
 	}
 
 	log.Printf("payment: created payment intent %s for order %s", pi.ID, event.OrderID)
+	return nil
+}
+
+type orderCancelledEvent struct {
+	OrderID string `json:"order_id"`
+}
+
+// HandleOrderCancelled records the cancel and refunds if the order was
+// already charged. It covers the ordering where the charge succeeded before
+// the cancel arrived. When the charge is still pending (webhook not yet
+// received), recording the cancel is enough: the webhook handler checks it
+// and refunds. When no payment exists yet, HandleOrderCreated sees the
+// cancel and skips the charge. The advisory lock and payment row lock make
+// these three cases mutually exclusive.
+func (h *PaymentHandler) HandleOrderCancelled(ctx context.Context, msg kafka.Message) error {
+	var event orderCancelledEvent
+	if err := json.Unmarshal(msg.Value, &event); err != nil {
+		return fmt.Errorf("payment_handler: unmarshal order.cancelled: %w", err)
+	}
+	orderID, err := uuid.Parse(event.OrderID)
+	if err != nil {
+		return fmt.Errorf("payment_handler: invalid order_id: %w", err)
+	}
+
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("payment_handler: begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	isNew, err := h.processedEvents.MarkProcessed(ctx, tx, orderID, orderCancelledTopic, h.consumerGroupID)
+	if err != nil {
+		return fmt.Errorf("payment_handler: mark processed: %w", err)
+	}
+	if !isNew {
+		return nil
+	}
+
+	if err := h.payments.LockOrder(ctx, tx, orderID); err != nil {
+		return fmt.Errorf("payment_handler: %w", err)
+	}
+	if err := h.payments.MarkCancelled(ctx, tx, orderID); err != nil {
+		return fmt.Errorf("payment_handler: %w", err)
+	}
+
+	payment, err := h.payments.GetByOrderIDForUpdate(ctx, tx, orderID)
+	if err != nil && !errors.Is(err, db.ErrPaymentNotFound) {
+		return fmt.Errorf("payment_handler: %w", err)
+	}
+	if err == nil && payment.Status == "succeeded" {
+		if err := h.refunder.refund(ctx, tx, orderID, payment.StripePaymentIntentID); err != nil {
+			return fmt.Errorf("payment_handler: %w", err)
+		}
+		log.Printf("payment: refunded order %s cancelled after charge", event.OrderID)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("payment_handler: commit: %w", err)
+	}
 	return nil
 }

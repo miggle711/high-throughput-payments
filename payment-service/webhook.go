@@ -27,11 +27,12 @@ type WebhookHandler struct {
 	payments        *db.PaymentsRepo
 	processedEvents *db.ProcessedEventsRepo
 	outbox          *db.OutboxRepo
+	refunder        *refunder
 	signingSecret   string
 }
 
-func NewWebhookHandler(payments *db.PaymentsRepo, processedEvents *db.ProcessedEventsRepo, outbox *db.OutboxRepo, signingSecret string) *WebhookHandler {
-	return &WebhookHandler{payments: payments, processedEvents: processedEvents, outbox: outbox, signingSecret: signingSecret}
+func NewWebhookHandler(payments *db.PaymentsRepo, processedEvents *db.ProcessedEventsRepo, outbox *db.OutboxRepo, stripe refundIssuer, signingSecret string) *WebhookHandler {
+	return &WebhookHandler{payments: payments, processedEvents: processedEvents, outbox: outbox, refunder: &refunder{stripe: stripe, payments: payments, outbox: outbox}, signingSecret: signingSecret}
 }
 
 // HandleStripeWebhook verifies the Stripe Signature header before trusting
@@ -102,6 +103,32 @@ func (h *WebhookHandler) HandleStripeWebhook(w http.ResponseWriter, r *http.Requ
 	}
 	if !isNew {
 		w.WriteHeader(http.StatusOK) // already handled this Stripe event, acknowledge without republishing
+		return
+	}
+
+	// If the order was cancelled while this charge was in flight, the money
+	// moved for an order nobody wants. Refund instead of announcing success,
+	// and stay quiet on failure: order.cancelled already restocked.
+	cancelled, err := h.payments.IsCancelled(ctx, tx, orderID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to process webhook")
+		return
+	}
+	if cancelled {
+		if status == "succeeded" {
+			if err := h.refunder.refund(ctx, tx, orderID, pi.ID); err != nil {
+				// 500 makes Stripe redeliver the webhook, retrying the refund.
+				log.Printf("payment: %v", err)
+				writeError(w, http.StatusInternalServerError, "failed to process webhook")
+				return
+			}
+			log.Printf("payment: refunded order %s cancelled while charge was in flight", orderID)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to process webhook")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
