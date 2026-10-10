@@ -33,6 +33,14 @@ func (f *fakeStripeClient) CreateAndConfirmPaymentIntent(ctx context.Context, am
 	return &stripe.PaymentIntent{ID: "pi_fake"}, nil
 }
 
+func (f *fakeStripeClient) RefundPaymentIntent(ctx context.Context, paymentIntentID string) (*stripe.Refund, error) {
+	n := atomic.AddInt64(&f.calls, 1)
+	if n <= f.failUntilCall || f.failing.Load() {
+		return nil, errFakeStripeDown
+	}
+	return &stripe.Refund{ID: "re_fake"}, nil
+}
+
 func (f *fakeStripeClient) callCount() int64 {
 	return atomic.LoadInt64(&f.calls)
 }
@@ -165,4 +173,25 @@ func withFastRetryDelays(t *testing.T) {
 	}
 	retryDelays = fast
 	t.Cleanup(func() { retryDelays = original })
+}
+
+// TestRefundPaymentIntent_RetriesThenSucceeds verifies a transient Stripe
+// failure on a refund is absorbed by the retry schedule.
+func TestRefundPaymentIntent_RetriesThenSucceeds(t *testing.T) {
+	withShortBreakerTimeout(t, time.Hour)
+	withFastRetryDelays(t)
+
+	fake := &fakeStripeClient{failUntilCall: 2}
+	client := New(fake)
+
+	r, err := client.RefundPaymentIntent(context.Background(), "pi_1")
+	if err != nil {
+		t.Fatalf("expected success after retries, got %v", err)
+	}
+	if r.ID != "re_fake" {
+		t.Errorf("refund id = %q, want re_fake", r.ID)
+	}
+	if got := fake.callCount(); got != 3 {
+		t.Errorf("call count = %d, want 3", got)
+	}
 }

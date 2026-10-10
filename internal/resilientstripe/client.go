@@ -25,11 +25,13 @@ var retryDelays = []time.Duration{0, time.Second, 5 * time.Second, 30 * time.Sec
 // substitute a fake that fails on command instead of calling real Stripe.
 type stripeClient interface {
 	CreateAndConfirmPaymentIntent(ctx context.Context, amountCents int64, orderID string) (*stripe.PaymentIntent, error)
+	RefundPaymentIntent(ctx context.Context, paymentIntentID string) (*stripe.Refund, error)
 }
 
 type Client struct {
-	inner   stripeClient
-	breaker *gobreaker.CircuitBreaker[*stripe.PaymentIntent]
+	inner         stripeClient
+	breaker       *gobreaker.CircuitBreaker[*stripe.PaymentIntent]
+	refundBreaker *gobreaker.CircuitBreaker[*stripe.Refund]
 }
 
 // breakerTimeout is how long the circuit stays open before allowing a
@@ -51,9 +53,12 @@ func New(client stripeClient) *Client {
 			return counts.ConsecutiveFailures >= 5
 		},
 	}
+	refundSettings := settings
+	refundSettings.Name = "stripe-refund"
 	return &Client{
-		inner:   client,
-		breaker: gobreaker.NewCircuitBreaker[*stripe.PaymentIntent](settings),
+		inner:         client,
+		breaker:       gobreaker.NewCircuitBreaker[*stripe.PaymentIntent](settings),
+		refundBreaker: gobreaker.NewCircuitBreaker[*stripe.Refund](refundSettings),
 	}
 }
 
@@ -82,4 +87,29 @@ func (c *Client) CreateAndConfirmPaymentIntent(ctx context.Context, amountCents 
 		return nil, fmt.Errorf("resilientstripe: create payment intent: %w", err)
 	}
 	return pi, nil
+}
+
+// RefundPaymentIntent applies the same retry schedule and circuit breaker as
+// charges, with its own breaker since gobreaker is typed per result. Safe to
+// retry because the underlying call uses a Stripe idempotency key.
+func (c *Client) RefundPaymentIntent(ctx context.Context, paymentIntentID string) (*stripe.Refund, error) {
+	r, err := c.refundBreaker.Execute(func() (*stripe.Refund, error) {
+		return retry.DoWithData(
+			func() (*stripe.Refund, error) {
+				return c.inner.RefundPaymentIntent(ctx, paymentIntentID)
+			},
+			retry.Context(ctx),
+			retry.Attempts(uint(len(retryDelays))),
+			retry.DelayType(func(n uint, _ error, _ *retry.Config) time.Duration {
+				return retryDelays[n]
+			}),
+		)
+	})
+	if err != nil {
+		if errors.Is(err, gobreaker.ErrOpenState) {
+			return nil, fmt.Errorf("resilientstripe: circuit open, not calling stripe: %w", err)
+		}
+		return nil, fmt.Errorf("resilientstripe: refund payment intent: %w", err)
+	}
+	return r, nil
 }
