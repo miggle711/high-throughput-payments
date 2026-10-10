@@ -19,8 +19,12 @@ const (
 	webhookConsumerGroup = "payment-service-webhook"
 )
 
+// paymentEvent is the payload for every payment.* event. ProductID rides
+// along because Inventory Service restocks by product and, per the event
+// carried state pattern, must not query Payment Service's tables for it.
 type paymentEvent struct {
-	OrderID string `json:"order_id"`
+	OrderID   string `json:"order_id"`
+	ProductID string `json:"product_id"`
 }
 
 type WebhookHandler struct {
@@ -85,7 +89,7 @@ func (h *WebhookHandler) HandleStripeWebhook(w http.ResponseWriter, r *http.Requ
 	}
 	defer tx.Rollback(ctx)
 
-	orderID, err := h.payments.UpdateStatusByIntentID(ctx, tx, pi.ID, status)
+	orderID, productID, err := h.payments.UpdateStatusByIntentID(ctx, tx, pi.ID, status)
 	if errors.Is(err, db.ErrPaymentNotFound) {
 		log.Printf("payment: webhook for unknown payment intent %s, ignoring", pi.ID)
 		w.WriteHeader(http.StatusOK)
@@ -116,7 +120,7 @@ func (h *WebhookHandler) HandleStripeWebhook(w http.ResponseWriter, r *http.Requ
 	}
 	if cancelled {
 		if status == "succeeded" {
-			if err := h.refunder.refund(ctx, tx, orderID, pi.ID); err != nil {
+			if err := h.refunder.refund(ctx, tx, orderID, productID, pi.ID); err != nil {
 				// 500 makes Stripe redeliver the webhook, retrying the refund.
 				log.Printf("payment: %v", err)
 				writeError(w, http.StatusInternalServerError, "failed to process webhook")
@@ -132,7 +136,7 @@ func (h *WebhookHandler) HandleStripeWebhook(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := h.outbox.Insert(ctx, tx, outboxType, orderID.String(), outboxType, paymentEvent{OrderID: orderID.String()}); err != nil {
+	if err := h.outbox.Insert(ctx, tx, outboxType, orderID.String(), outboxType, paymentEvent{OrderID: orderID.String(), ProductID: productID}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to process webhook")
 		return
 	}

@@ -112,7 +112,7 @@ func (h *PaymentHandler) HandleOrderCreated(ctx context.Context, msg kafka.Messa
 		// system reacts consistently, the same as an explicit decline.
 		log.Printf("payment: stripe call failed for order %s after retries: %v", event.OrderID, stripeErr)
 
-		if err := h.outbox.Insert(ctx, tx, paymentFailedType, event.OrderID, paymentFailedType, paymentEvent{OrderID: event.OrderID}); err != nil {
+		if err := h.outbox.Insert(ctx, tx, paymentFailedType, event.OrderID, paymentFailedType, paymentEvent{OrderID: event.OrderID, ProductID: event.ProductID}); err != nil {
 			return fmt.Errorf("payment_handler: insert payment.failed outbox event: %w", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -124,6 +124,7 @@ func (h *PaymentHandler) HandleOrderCreated(ctx context.Context, msg kafka.Messa
 	payment := &db.Payment{
 		OrderID:               orderID,
 		StripePaymentIntentID: pi.ID,
+		ProductID:             event.ProductID,
 		Amount:                event.Amount,
 		Status:                "pending",
 	}
@@ -186,7 +187,7 @@ func (h *PaymentHandler) HandleOrderCancelled(ctx context.Context, msg kafka.Mes
 		return fmt.Errorf("payment_handler: %w", err)
 	}
 	if err == nil && payment.Status == "succeeded" {
-		if err := h.refunder.refund(ctx, tx, orderID, payment.StripePaymentIntentID); err != nil {
+		if err := h.refunder.refund(ctx, tx, orderID, payment.ProductID, payment.StripePaymentIntentID); err != nil {
 			return fmt.Errorf("payment_handler: %w", err)
 		}
 		log.Printf("payment: refunded order %s cancelled after charge", event.OrderID)
