@@ -1,0 +1,19 @@
+# Runs once and exits. Services are deployed after it completes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: payments
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: migrate:dev
+          imagePullPolicy: IfNotPresent
+          args: ["-path", "/migrations", "-database", "$(DATABASE_URL)?sslmode=disable", "up"]
+          envFrom:
+            - configMapRef:
+                name: app-config
