@@ -37,7 +37,29 @@ Full report: `full-stack.html`
 - At that rate, draining the 3433 orders created during the run would take close to an hour.
 - Not a code bug: every payment makes a real, synchronous Stripe API call, and Stripe's round trip latency is the bottleneck, not our own logic.
 - This is exactly the kind of dependency the circuit breaker and retry logic (PR #22) exist to protect against, and why Payment Service falling behind never blocks Order Service.
-- Direct fix: scale Payment Service horizontally across more consumer instances, since `order.created` is already partitioned in Kafka for exactly this, tracked as #25.
+- Direct fix: scale Payment Service horizontally across more consumer instances, since `order.created` is already partitioned in Kafka for exactly this. Measured below.
+
+## Scaling Payment Service (#25)
+
+Queued 180 orders with no Payment Service running, then started K instances in the same consumer group and timed how long until every order had a payment. Real Stripe test mode calls, `order.created` on 12 partitions, script in `loadtest/drain.sh`.
+
+| Instances | Time to drain 180 orders | Payments per minute |
+|---|---|---|
+| 1 | 175s | 66 |
+| 3 | 63s | 180 |
+
+- 3 instances gave 2.7x, short of 3x because of the consumer group rebalance when instances start.
+- All 180 orders got exactly one payment row, no duplicates.
+- Each instance handles one message at a time, so throughput is roughly instances divided by Stripe latency.
+- The ceiling is the partition count, since a partition has one consumer per group. Only 1 and 3 instances were measured, not 12.
+- Charges now carry a Stripe idempotency key (`charge-<order id>`), so a redelivery after a rebalance returns the original PaymentIntent instead of charging twice.
+- Run each instance with its own `PORT`. Webhooks can go to any instance since handling is stateless, and each instance has its own circuit breaker.
+- `EnsureTopic` does not resize an existing topic. To raise partitions on one that exists:
+
+```
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:19092 --alter --topic order.created --partitions 12
+```
 
 ## How to reproduce
 

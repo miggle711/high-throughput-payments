@@ -43,6 +43,10 @@ func (c *Client) CreateAndConfirmPaymentIntent(ctx context.Context, amountCents 
 	}
 	params.AddMetadata("order_id", orderID)
 	params.Context = ctx
+	// Keyed on the order so a Kafka redelivery (crash or consumer group
+	// rebalance between the charge and the offset commit) gets the original
+	// PaymentIntent back instead of charging the customer twice.
+	params.SetIdempotencyKey("charge-" + orderID)
 
 	pi, err := paymentintent.New(params)
 	if err != nil {

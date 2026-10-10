@@ -14,7 +14,13 @@ import (
 	"github.com/mvar0010/high-throughput-payments/internal/outbox"
 )
 
-const shutdownTimeout = 10 * time.Second
+const (
+	shutdownTimeout = 10 * time.Second
+	// orderCreatedPartitions caps how many Payment Service instances can
+	// charge in parallel, since a partition has one consumer per group.
+	// EnsureTopic does not resize an existing topic, see the README.
+	orderCreatedPartitions = 12
+)
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -36,7 +42,7 @@ func main() {
 	orderHandler := NewOrderHandler(ordersRepo, outboxRepo)
 
 	kafkaBrokers := strings.Split(envOr("KAFKA_BROKERS", "localhost:9092"), ",")
-	if err := outbox.EnsureTopic(ctx, kafkaBrokers, orderCreatedTopic, 3); err != nil {
+	if err := outbox.EnsureTopic(ctx, kafkaBrokers, orderCreatedTopic, orderCreatedPartitions); err != nil {
 		log.Fatalf("order-service: %v", err)
 	}
 	if err := outbox.EnsureTopic(ctx, kafkaBrokers, orderCancelledTopic, 3); err != nil {
