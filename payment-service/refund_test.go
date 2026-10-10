@@ -62,7 +62,7 @@ func (f *fixture) insertPayment(t *testing.T, orderID uuid.UUID, intentID, statu
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &db.Payment{OrderID: orderID, StripePaymentIntentID: intentID, Amount: 1000, Status: status}
+	p := &db.Payment{OrderID: orderID, StripePaymentIntentID: intentID, ProductID: "iphone", Amount: 1000, Status: status}
 	if err := f.payments.Create(ctx, tx, p); err != nil {
 		t.Fatal(err)
 	}
@@ -81,8 +81,13 @@ func (f *fixture) cancel(t *testing.T, orderID uuid.UUID) {
 
 func (f *fixture) sendSucceededWebhook(t *testing.T, intentID string) {
 	t.Helper()
+	f.sendWebhook(t, "payment_intent.succeeded", intentID)
+}
+
+func (f *fixture) sendWebhook(t *testing.T, eventType, intentID string) {
+	t.Helper()
 	payload, _ := json.Marshal(map[string]any{
-		"id": "evt_" + uuid.NewString(), "object": "event", "type": "payment_intent.succeeded",
+		"id": "evt_" + uuid.NewString(), "object": "event", "type": eventType,
 		"data": map[string]any{"object": map[string]any{"id": intentID, "object": "payment_intent"}},
 	})
 	signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: payload, Secret: testWebhookSecret, Timestamp: time.Now()})
@@ -194,5 +199,49 @@ func TestCancelRedelivery_RefundsOnce(t *testing.T) {
 
 	if got := atomic.LoadInt64(&f.fake.calls); got != 1 {
 		t.Errorf("refund calls = %d, want 1", got)
+	}
+}
+
+// payloadProductID returns the product_id of the single outbox event of
+// eventType, which is what Inventory Service reads to restock.
+func (f *fixture) payloadProductID(t *testing.T, eventType string) string {
+	t.Helper()
+	var payload []byte
+	if err := f.pool.QueryRow(context.Background(), `SELECT payload FROM outbox_events WHERE event_type = $1`, eventType).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var e paymentEvent
+	if err := json.Unmarshal(payload, &e); err != nil {
+		t.Fatal(err)
+	}
+	return e.ProductID
+}
+
+// Regression test for #28: payment.failed used to carry only order_id, so
+// Inventory restocked product "" and never put real stock back.
+func TestPaymentFailedWebhook_CarriesProductID(t *testing.T) {
+	f := newFixture(t)
+	orderID := uuid.New()
+	f.insertPayment(t, orderID, "pi_4", "pending")
+
+	f.sendWebhook(t, "payment_intent.payment_failed", "pi_4")
+
+	if got := f.outboxCount(t, paymentFailedType); got != 1 {
+		t.Fatalf("payment.failed events = %d, want 1", got)
+	}
+	if got := f.payloadProductID(t, paymentFailedType); got != "iphone" {
+		t.Errorf("payment.failed product_id = %q, want iphone", got)
+	}
+}
+
+func TestRefund_CarriesProductID(t *testing.T) {
+	f := newFixture(t)
+	orderID := uuid.New()
+	f.insertPayment(t, orderID, "pi_5", "succeeded")
+
+	f.cancel(t, orderID)
+
+	if got := f.payloadProductID(t, paymentRefundedType); got != "iphone" {
+		t.Errorf("payment.refunded product_id = %q, want iphone", got)
 	}
 }

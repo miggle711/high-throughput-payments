@@ -31,12 +31,12 @@ type refunder struct {
 // returns an error, tx rolls back, and the message or webhook is retried.
 // A retry after a successful Stripe call but failed commit is safe because
 // the refund uses an idempotency key.
-func (r *refunder) refund(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, paymentIntentID string) error {
+func (r *refunder) refund(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, productID, paymentIntentID string) error {
 	if _, err := r.stripe.RefundPaymentIntent(ctx, paymentIntentID); err != nil {
 		return fmt.Errorf("refund: order %s: %w", orderID, err)
 	}
 	if err := r.payments.UpdateStatusByOrderID(ctx, tx, orderID, "refunded"); err != nil {
 		return err
 	}
-	return r.outbox.Insert(ctx, tx, paymentRefundedType, orderID.String(), paymentRefundedType, paymentEvent{OrderID: orderID.String()})
+	return r.outbox.Insert(ctx, tx, paymentRefundedType, orderID.String(), paymentRefundedType, paymentEvent{OrderID: orderID.String(), ProductID: productID})
 }

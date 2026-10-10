@@ -15,6 +15,7 @@ var ErrPaymentNotFound = errors.New("payment not found")
 type Payment struct {
 	OrderID               uuid.UUID
 	StripePaymentIntentID string
+	ProductID             string
 	Amount                int64
 	Status                string
 }
@@ -29,35 +30,36 @@ func NewPaymentsRepo(pool *pgxpool.Pool) *PaymentsRepo {
 
 func (r *PaymentsRepo) Create(ctx context.Context, tx pgx.Tx, p *Payment) error {
 	const q = `
-		INSERT INTO payments (order_id, stripe_payment_intent_id, amount, status)
-		VALUES ($1, $2, $3, $4)`
+		INSERT INTO payments (order_id, stripe_payment_intent_id, product_id, amount, status)
+		VALUES ($1, $2, $3, $4, $5)`
 
-	if _, err := tx.Exec(ctx, q, p.OrderID, p.StripePaymentIntentID, p.Amount, p.Status); err != nil {
+	if _, err := tx.Exec(ctx, q, p.OrderID, p.StripePaymentIntentID, p.ProductID, p.Amount, p.Status); err != nil {
 		return fmt.Errorf("payments_repo: create: %w", err)
 	}
 	return nil
 }
 
 // UpdateStatusByIntentID sets status for the payment matching a Stripe
-// PaymentIntent ID, returning the order ID it belongs to. Used by the
-// webhook handler, which only knows the PaymentIntent ID from Stripe, not
-// the order ID directly.
-func (r *PaymentsRepo) UpdateStatusByIntentID(ctx context.Context, tx pgx.Tx, intentID, status string) (uuid.UUID, error) {
+// PaymentIntent ID, returning the order ID and product ID it belongs to.
+// Used by the webhook handler, which only knows the PaymentIntent ID from
+// Stripe, so downstream events can carry the product ID Inventory needs.
+func (r *PaymentsRepo) UpdateStatusByIntentID(ctx context.Context, tx pgx.Tx, intentID, status string) (uuid.UUID, string, error) {
 	const q = `
 		UPDATE payments
 		SET status = $1, updated_at = now()
 		WHERE stripe_payment_intent_id = $2
-		RETURNING order_id`
+		RETURNING order_id, product_id`
 
 	var orderID uuid.UUID
-	err := tx.QueryRow(ctx, q, status, intentID).Scan(&orderID)
+	var productID string
+	err := tx.QueryRow(ctx, q, status, intentID).Scan(&orderID, &productID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return uuid.Nil, ErrPaymentNotFound
+		return uuid.Nil, "", ErrPaymentNotFound
 	}
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("payments_repo: update_status_by_intent_id: %w", err)
+		return uuid.Nil, "", fmt.Errorf("payments_repo: update_status_by_intent_id: %w", err)
 	}
-	return orderID, nil
+	return orderID, productID, nil
 }
 
 func (r *PaymentsRepo) BeginTx(ctx context.Context) (pgx.Tx, error) {
@@ -100,13 +102,13 @@ func (r *PaymentsRepo) IsCancelled(ctx context.Context, tx pgx.Tx, orderID uuid.
 // until tx ends, so a concurrent webhook update waits for this transaction.
 func (r *PaymentsRepo) GetByOrderIDForUpdate(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) (*Payment, error) {
 	const q = `
-		SELECT order_id, stripe_payment_intent_id, amount, status
+		SELECT order_id, stripe_payment_intent_id, product_id, amount, status
 		FROM payments
 		WHERE order_id = $1
 		FOR UPDATE`
 
 	var p Payment
-	err := tx.QueryRow(ctx, q, orderID).Scan(&p.OrderID, &p.StripePaymentIntentID, &p.Amount, &p.Status)
+	err := tx.QueryRow(ctx, q, orderID).Scan(&p.OrderID, &p.StripePaymentIntentID, &p.ProductID, &p.Amount, &p.Status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrPaymentNotFound
 	}
